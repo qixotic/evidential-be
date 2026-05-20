@@ -4250,3 +4250,43 @@ async def test_create_freq_preassigned_experiment_with_cluster_key_roundtrips(
     fetched = aclient.get_experiment_for_ui(datasource_id=datasource_id, experiment_id=created.experiment_id).data
     assert isinstance(fetched.config.design_spec, PreassignedFrequentistExperimentSpec)
     assert fetched.config.design_spec.cluster_key == "cluster_powerlaw"
+
+
+async def test_analyze_cluster_preassigned_experiment(testing_datasource, aclient: AdminAPIClient):
+    """Cluster-randomized preassigned experiment uses clustered SEs in analyze."""
+    datasource_id = testing_datasource.ds.id
+    experiment_request = CreateExperimentRequest(
+        design_spec=PreassignedFrequentistExperimentSpec(
+            experiment_type="freq_preassigned",
+            experiment_name="Cluster analyze e2e",
+            description="Analyze with clustered standard errors.",
+            table_name="clustered_dwh",
+            primary_key="participant_id",
+            cluster_key="cluster_equal",
+            start_date=datetime(2024, 1, 1, tzinfo=UTC),
+            end_date=datetime(2024, 1, 31, 23, 59, 59, tzinfo=UTC),
+            arms=[
+                Arm(arm_name="control", arm_description="Control"),
+                Arm(arm_name="treatment", arm_description="Treatment"),
+            ],
+            metrics=[DesignSpecMetricRequest(field_name="test_score", metric_pct_change=5)],
+            strata=[],
+            filters=[],
+            desired_n=100,
+        ),
+        webhooks=[],
+    )
+
+    created = aclient.create_experiment(datasource_id=datasource_id, body=experiment_request, random_state=42).data
+    analysis = aclient.analyze_experiment(datasource_id=datasource_id, experiment_id=created.experiment_id).data
+    assert isinstance(analysis, FreqExperimentAnalysisResponse)
+    assert analysis.experiment_id == created.experiment_id
+    assert analysis.num_participants == 100
+    assert len(analysis.metric_analyses) == 1
+    metric_analysis = analysis.metric_analyses[0]
+    assert metric_analysis.metric_name == "test_score"
+    assert len(metric_analysis.arm_analyses) == 2
+    for arm_analysis in metric_analysis.arm_analyses:
+        assert arm_analysis.std_error is not None
+        assert not np.isnan(arm_analysis.std_error)
+        assert arm_analysis.std_error > 0
