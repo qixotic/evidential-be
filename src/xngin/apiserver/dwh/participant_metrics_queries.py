@@ -244,6 +244,76 @@ def build_participant_metrics_plan(
     )
 
 
+def build_participant_field_plan(
+    sa_table: Table,
+    unique_id_field: str,
+    participant_ids: list[str],
+    field_name: str,
+) -> ParticipantMetricsPlans:
+    """Build batched DWH queries for participant_id and one additional field (as strings)."""
+    unique_id_col: sqlalchemy.Column = sa_table.c[unique_id_field]
+    field_col: sqlalchemy.Column = sa_table.c[field_name]
+    select_columns: list[Label] = [
+        cast(unique_id_col, String).label("participant_id"),
+        cast(field_col, String).label(field_name),
+    ]
+    field_names = ["participant_id", field_name]
+
+    chunks = make_participant_chunks(unique_id_col, participant_ids)
+    coalesced_chunks = coalesce_chunks_into_disjunctives(chunks)
+
+    query_plans: list[QueryPlan] = []
+    for batch_chunks in coalesced_chunks:
+        batch_filters = [filter_op.to_filter(unique_id_field, unique_id_col.type) for filter_op in batch_chunks]
+        group_filter = or_(*[create_one_filter(filter_, sa_table) for filter_ in batch_filters])
+        query_plans.append(QueryPlan(query=select(*select_columns).filter(group_filter), chunks=batch_chunks))
+
+    return ParticipantMetricsPlans(field_names=field_names, plans=query_plans)
+
+
+def get_participant_field_values(
+    session: Session,
+    sa_table: Table,
+    unique_id_field: str,
+    participant_ids: list[str],
+    field_name: str,
+) -> dict[str, str]:
+    """Fetch one DWH column for the given participant IDs. Values are returned as strings."""
+    if not participant_ids:
+        return {}
+
+    logger.info(
+        "Fetching participant field values: table={} unique_id_field={} field_name={} #participant_ids={}",
+        sa_table.name,
+        unique_id_field,
+        field_name,
+        len(participant_ids),
+    )
+    if field_name not in sa_table.c:
+        raise LateValidationError(f"Field '{field_name}' not found in table.")
+    if unique_id_field not in sa_table.columns:
+        raise LateValidationError(f"Unique ID field {unique_id_field} not found in table.")
+
+    field_plans = build_participant_field_plan(
+        sa_table=sa_table,
+        unique_id_field=unique_id_field,
+        participant_ids=participant_ids,
+        field_name=field_name,
+    )
+    field_values: dict[str, str] = {}
+    for batch_index, plan in enumerate(field_plans.plans, start=1):
+        logger.info(
+            "Running participant field batch {}/{}: {}",
+            batch_index,
+            len(field_plans.plans),
+            plan.summary(),
+        )
+        for participant_id, value in session.execute(plan.query):
+            field_values[str(participant_id)] = str(value)
+    logger.info("Finished fetching participant field values rows={}", len(field_values))
+    return field_values
+
+
 def get_participant_metrics(
     session: Session,
     sa_table: Table,
