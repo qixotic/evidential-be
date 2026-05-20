@@ -1,6 +1,10 @@
 import numpy as np
-from sqlalchemy import Column, Integer, String
+import pytest
+from sqlalchemy import Column, Integer, MetaData, String, Table, create_engine
+from sqlalchemy.orm import Session
 
+from xngin.apiserver import flags
+from xngin.apiserver.conftest import get_test_uri_info
 from xngin.apiserver.dwh.analysis_types import MetricValue, ParticipantOutcome
 from xngin.apiserver.dwh.participant_metrics_queries import (
     MAXIMUM_ROWS_FOR_BETWEEN,
@@ -9,11 +13,13 @@ from xngin.apiserver.dwh.participant_metrics_queries import (
     between_strategy,
     build_participant_metrics_plan,
     coalesce_chunks_into_disjunctives,
+    get_participant_field_values,
     get_participant_metrics,
     identify_runs,
     make_participant_chunks,
     to_np_int_arr,
 )
+from xngin.apiserver.exceptions_common import LateValidationError
 from xngin.apiserver.routers.common_api_types import DesignSpecMetricRequest
 
 pytest_plugins = ("xngin.apiserver.dwh.dwh_test_support",)
@@ -218,3 +224,78 @@ def test_build_participant_metrics_query_plans_keeps_single_large_between_range(
     query = query_plans[0].query.compile()
     assert " BETWEEN " in str(query)
     assert query.params == {"id_1": 1, "id_2": PARTICIPANT_BATCH_SIZE + 5}
+
+
+class TestClusteredDwhParticipantFieldValues:
+    @pytest.fixture(name="clustered_dwh_session", scope="class")
+    def fixture_clustered_dwh_session(self):
+        test_db = get_test_uri_info(flags.XNGIN_DEVDWH_DSN)
+        engine = create_engine(
+            test_db.connect_url,
+            logging_name="test_participant_metrics_queries",
+            execution_options={"logging_token": "test_participant_metrics_queries"},
+        )
+        try:
+            with Session(engine) as session:
+                yield session
+        finally:
+            engine.dispose()
+
+    @pytest.fixture(name="clustered_dwh_table", scope="class")
+    def fixture_clustered_dwh_table(self, clustered_dwh_session):
+        return Table("clustered_dwh", MetaData(), autoload_with=clustered_dwh_session.get_bind())
+
+    def test_get_participant_field_values_returns_cluster_ids(self, clustered_dwh_session, clustered_dwh_table):
+        values = get_participant_field_values(
+            clustered_dwh_session,
+            clustered_dwh_table,
+            unique_id_field="participant_id",
+            participant_ids=["1", "2", "3"],
+            field_name="cluster_equal",
+        )
+        assert values == {"1": "0", "2": "0", "3": "0"}
+
+    def test_get_participant_field_values_raises_for_missing_column(self, clustered_dwh_session, clustered_dwh_table):
+        with pytest.raises(LateValidationError, match="Field 'missing_col' not found"):
+            get_participant_field_values(
+                clustered_dwh_session,
+                clustered_dwh_table,
+                unique_id_field="participant_id",
+                participant_ids=["1"],
+                field_name="missing_col",
+            )
+
+
+def test_get_participant_field_values_preserves_nulls():
+    engine = create_engine("sqlite:///:memory:")
+    metadata = MetaData()
+    table = Table(
+        "participants",
+        metadata,
+        Column("participant_id", String, primary_key=True),
+        Column("cluster_id", String, nullable=True),
+    )
+    metadata.create_all(engine)
+
+    try:
+        with Session(engine) as session:
+            session.execute(
+                table.insert(),
+                [
+                    {"participant_id": "1", "cluster_id": None},
+                    {"participant_id": "2", "cluster_id": "school-a"},
+                ],
+            )
+            session.commit()
+
+            values = get_participant_field_values(
+                session,
+                table,
+                unique_id_field="participant_id",
+                participant_ids=["1", "2"],
+                field_name="cluster_id",
+            )
+    finally:
+        engine.dispose()
+
+    assert values == {"1": None, "2": "school-a"}
