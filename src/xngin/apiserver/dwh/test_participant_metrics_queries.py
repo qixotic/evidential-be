@@ -264,3 +264,38 @@ class TestClusteredDwhParticipantFieldValues:
                 participant_ids=["1"],
                 field_name="missing_col",
             )
+
+
+def test_get_participant_field_values_preserves_nulls():
+    engine = create_engine("sqlite:///:memory:")
+    metadata = MetaData()
+    table = Table(
+        "participants",
+        metadata,
+        Column("participant_id", String, primary_key=True),
+        Column("cluster_id", String, nullable=True),
+    )
+    metadata.create_all(engine)
+
+    try:
+        with Session(engine) as session:
+            session.execute(
+                table.insert(),
+                [
+                    {"participant_id": "1", "cluster_id": None},
+                    {"participant_id": "2", "cluster_id": "school-a"},
+                ],
+            )
+            session.commit()
+
+            values = get_participant_field_values(
+                session,
+                table,
+                unique_id_field="participant_id",
+                participant_ids=["1", "2"],
+                field_name="cluster_id",
+            )
+    finally:
+        engine.dispose()
+
+    assert values == {"1": None, "2": "school-a"}

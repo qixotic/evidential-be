@@ -250,7 +250,7 @@ def build_participant_field_plan(
     participant_ids: list[str],
     field_name: str,
 ) -> ParticipantMetricsPlans:
-    """Build batched DWH queries for participant_id and one additional field (as strings)."""
+    """Build batched DWH queries for participant_id and one additional field, preserving NULLs."""
     unique_id_col: sqlalchemy.Column = sa_table.c[unique_id_field]
     field_col: sqlalchemy.Column = sa_table.c[field_name]
     select_columns: list[Label] = [
@@ -277,8 +277,8 @@ def get_participant_field_values(
     unique_id_field: str,
     participant_ids: list[str],
     field_name: str,
-) -> dict[str, str]:
-    """Fetch one DWH column for the given participant IDs. Values are returned as strings."""
+) -> dict[str, str | None]:
+    """Fetch one DWH column for the given participant IDs as strings, preserving NULL values."""
     if not participant_ids:
         return {}
 
@@ -300,7 +300,7 @@ def get_participant_field_values(
         participant_ids=participant_ids,
         field_name=field_name,
     )
-    field_values: dict[str, str] = {}
+    field_values: dict[str, str | None] = {}
     for batch_index, plan in enumerate(field_plans.plans, start=1):
         logger.info(
             "Running participant field batch {}/{}: {}",
@@ -309,7 +309,7 @@ def get_participant_field_values(
             plan.summary(),
         )
         for participant_id, value in session.execute(plan.query):
-            field_values[str(participant_id)] = str(value)
+            field_values[str(participant_id)] = None if value is None else str(value)
     logger.info("Finished fetching participant field values rows={}", len(field_values))
     return field_values
 
