@@ -65,6 +65,7 @@ from xngin.apiserver.sqla import tables
 from xngin.apiserver.storage.storage_format_converters import ExperimentStorageConverter
 from xngin.apiserver.testing.assertions import assert_dates_equal
 from xngin.apiserver.testing.testing_dwh_def import TESTING_DWH_PARTICIPANT_DEF
+from xngin.stats.stats_errors import StatsAnalysisError
 
 
 def make_createexperimentrequest_json(
@@ -2364,6 +2365,131 @@ async def test_analyze_experiment_freq_impl_with_no_outcomes_for_any_arms(xngin_
         assert arm_analysis.mean_ci_lower is not None and np.isnan(arm_analysis.mean_ci_lower)
         assert arm_analysis.mean_ci_upper is not None and np.isnan(arm_analysis.mean_ci_upper)
         assert arm_analysis.num_missing_values == -1
+
+
+def _clustered_analyze_design_spec(*, cluster_key: str | None) -> PreassignedFrequentistExperimentSpec:
+    return PreassignedFrequentistExperimentSpec(
+        experiment_type=ExperimentsType.FREQ_PREASSIGNED,
+        experiment_name="cluster analyze test",
+        description="test",
+        table_name="clustered_dwh",
+        primary_key="participant_id",
+        cluster_key=cluster_key,
+        start_date=datetime(2024, 1, 1, tzinfo=UTC),
+        end_date=datetime(2024, 12, 31, 23, 59, 59, tzinfo=UTC),
+        arms=[
+            Arm(arm_name="control", arm_description="Control"),
+            Arm(arm_name="treatment", arm_description="Treatment"),
+        ],
+        strata=[],
+        metrics=[DesignSpecMetricRequest(field_name="test_score", metric_pct_change=0.1)],
+        filters=[],
+        desired_n=100,
+        power=0.8,
+        alpha=0.05,
+        fstat_thresh=0.2,
+    )
+
+
+async def _insert_clustered_assignments(
+    xngin_session: AsyncSession,
+    experiment: tables.Experiment,
+    *,
+    n: int = 200,
+    participant_ids: list[str] | None = None,
+) -> tuple[str, str]:
+    arm1_id = experiment.arms[0].id
+    arm2_id = experiment.arms[1].id
+    ids = participant_ids if participant_ids is not None else [str(i) for i in range(1, n + 1)]
+    arm_assignments = [
+        tables.ArmAssignment(
+            experiment_id=experiment.id,
+            participant_type="",
+            participant_id=participant_id,
+            arm_id=arm1_id if index % 2 == 0 else arm2_id,
+            strata=[],
+        )
+        for index, participant_id in enumerate(ids)
+    ]
+    xngin_session.add_all(arm_assignments)
+    xngin_session.add_all([
+        tables.ArmStats(arm_id=arm1_id, population=sum(1 for i, _ in enumerate(ids) if i % 2 == 0)),
+        tables.ArmStats(arm_id=arm2_id, population=sum(1 for i, _ in enumerate(ids) if i % 2 == 1)),
+    ])
+    await xngin_session.commit()
+    await xngin_session.refresh(experiment, ["arms", "arm_assignments"])
+    return arm1_id, arm2_id
+
+
+async def test_analyze_experiment_freq_impl_with_cluster_key(xngin_session, testing_datasource):
+    design_spec = _clustered_analyze_design_spec(cluster_key="cluster_equal")
+    experiment, _ = await make_insertable_experiment(
+        testing_datasource.ds,
+        ExperimentState.ASSIGNED,
+        design_spec=design_spec,
+    )
+    xngin_session.add(experiment)
+    await xngin_session.commit()
+    baseline_arm_id, _ = await _insert_clustered_assignments(xngin_session, experiment)
+
+    metrics = design_spec.metrics
+    clustered_analysis = await analyze_experiment_freq_impl(
+        xngin_session, testing_datasource.ds.get_config(), experiment, baseline_arm_id, metrics
+    )
+    treatment_arm_id = experiment.arms[1].id
+    clustered_treatment = next(
+        a for a in clustered_analysis.metric_analyses[0].arm_analyses if a.arm_id == treatment_arm_id
+    )
+    assert clustered_treatment.std_error is not None
+    assert clustered_treatment.std_error > 0
+
+    non_cluster_spec = _clustered_analyze_design_spec(cluster_key=None)
+    non_cluster_experiment, _ = await make_insertable_experiment(
+        testing_datasource.ds,
+        ExperimentState.ASSIGNED,
+        design_spec=non_cluster_spec,
+    )
+    xngin_session.add(non_cluster_experiment)
+    await xngin_session.commit()
+    non_cluster_baseline, _ = await _insert_clustered_assignments(xngin_session, non_cluster_experiment)
+
+    hc1_analysis = await analyze_experiment_freq_impl(
+        xngin_session,
+        testing_datasource.ds.get_config(),
+        non_cluster_experiment,
+        non_cluster_baseline,
+        metrics,
+    )
+    hc1_treatment = next(
+        a for a in hc1_analysis.metric_analyses[0].arm_analyses if a.arm_id == non_cluster_experiment.arms[1].id
+    )
+    assert hc1_treatment.std_error is not None
+    assert clustered_treatment.std_error > hc1_treatment.std_error
+
+
+async def test_analyze_experiment_freq_impl_raises_when_cluster_missing_in_dwh(xngin_session, testing_datasource):
+    design_spec = _clustered_analyze_design_spec(cluster_key="cluster_equal")
+    experiment, _ = await make_insertable_experiment(
+        testing_datasource.ds,
+        ExperimentState.ASSIGNED,
+        design_spec=design_spec,
+    )
+    xngin_session.add(experiment)
+    await xngin_session.commit()
+    baseline_arm_id, _ = await _insert_clustered_assignments(
+        xngin_session,
+        experiment,
+        participant_ids=["1", "2", "999999999"],
+    )
+
+    with pytest.raises(StatsAnalysisError, match="Cluster column 'cluster_equal' is missing"):
+        await analyze_experiment_freq_impl(
+            xngin_session,
+            testing_datasource.ds.get_config(),
+            experiment,
+            baseline_arm_id,
+            design_spec.metrics,
+        )
 
 
 async def test_arm_population_counter(xngin_session, testing_datasource):

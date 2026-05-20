@@ -19,7 +19,7 @@ from sqlalchemy.orm import selectinload
 from xngin.apiserver import constants, flags
 from xngin.apiserver.dwh.dwh_session import DwhSession
 from xngin.apiserver.dwh.inspection_types import FieldDescriptor
-from xngin.apiserver.dwh.participant_metrics_queries import get_participant_metrics
+from xngin.apiserver.dwh.participant_metrics_queries import get_participant_field_values, get_participant_metrics
 from xngin.apiserver.exceptions_common import LateValidationError
 from xngin.apiserver.routers.assignment_adapters import (
     RowProtocol,
@@ -1038,6 +1038,10 @@ async def analyze_experiment_freq_impl(
     participant_ids, assignments_df = await read_assignments_efficiently(xngin_session, experiment.id)
     if assignments_df.empty:
         raise StatsAnalysisError("No participants found for experiment.")
+
+    cluster_key_field = experiment.cluster_key_field()
+    cluster_col = cluster_key_field.field_name if cluster_key_field else None
+
     async with DwhSession(dsconfig.dwh) as dwh:
         sa_table = await dwh.inspect_table(experiment.datasource_table)
 
@@ -1051,6 +1055,26 @@ async def analyze_experiment_freq_impl(
             unique_id_field.field_name,
             participant_ids,
         )
+        if cluster_col is not None:
+            cluster_values = await asyncio.to_thread(
+                get_participant_field_values,
+                dwh.session,
+                sa_table,
+                unique_id_field.field_name,
+                participant_ids,
+                cluster_col,
+            )
+            assignments_df[cluster_col] = assignments_df["participant_id"].map(cluster_values)
+            missing_cluster_mask = assignments_df[cluster_col].isna()
+            if missing_cluster_mask.any():
+                missing_ids = assignments_df.loc[missing_cluster_mask, "participant_id"].tolist()
+                sample = ", ".join(missing_ids[:5])
+                suffix = "..." if len(missing_ids) > 5 else ""
+                raise StatsAnalysisError(
+                    f"Cluster column '{cluster_col}' is missing for {len(missing_ids)} assigned participant(s) "
+                    f"(e.g. {sample}{suffix}). This can indicate post-assignment changes to cluster IDs "
+                    "in the datasource."
+                )
 
     if len(participant_outcomes) == 0:
         raise StatsAnalysisError(
@@ -1070,6 +1094,7 @@ async def analyze_experiment_freq_impl(
         participant_outcomes,
         baseline_arm_id,
         alpha=experiment.alpha,
+        cluster_col=cluster_col,
     )
 
     metric_analyses = []
