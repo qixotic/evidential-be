@@ -4,6 +4,7 @@ from pydantic import BaseModel, Field
 
 from xngin.apiserver.common_field_types import FieldName
 from xngin.apiserver.limits import (
+    MAX_LENGTH_OF_ID_VALUE,
     MAX_LENGTH_OF_PARTICIPANT_ID_VALUE,
     MAX_NUMBER_OF_FIELDS,
 )
@@ -22,3 +23,14 @@ class MetricValue(BaseModel):
 class ParticipantOutcome(BaseModel):
     participant_id: Annotated[str, Field(max_length=MAX_LENGTH_OF_PARTICIPANT_ID_VALUE)]
     metric_values: Annotated[list[MetricValue], Field(max_length=MAX_NUMBER_OF_FIELDS)]
+    cluster_value: Annotated[
+        str | None,
+        Field(
+            default=None,
+            max_length=MAX_LENGTH_OF_ID_VALUE,
+            description=(
+                "Cluster that this participant is a member of. Only present in cluster-randomized designs. "
+                "See also BaseFrequentistDesignSpec.cluster_key."
+            ),
+        ),
+    ] = None

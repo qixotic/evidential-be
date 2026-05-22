@@ -1032,12 +1032,17 @@ async def analyze_experiment_freq_impl(
     """Analyze a frequentist experiment. Assumes arms and arm_assignments are preloaded."""
 
     unique_id_field = experiment.unique_id_field()
-    if experiment.datasource_table is None or unique_id_field is None:
+    unique_id_name = unique_id_field.field_name if unique_id_field else None
+    if experiment.datasource_table is None or unique_id_name is None:
         raise StatsAnalysisError("Experiment must have a datasource table and unique ID field to analyze.")
 
     participant_ids, assignments_df = await read_assignments_efficiently(xngin_session, experiment.id)
     if assignments_df.empty:
         raise StatsAnalysisError("No participants found for experiment.")
+
+    cluster_key_field = experiment.cluster_key_field()
+    cluster_key_name = cluster_key_field.field_name if cluster_key_field else None
+
     async with DwhSession(dsconfig.dwh) as dwh:
         sa_table = await dwh.inspect_table(experiment.datasource_table)
 
@@ -1045,17 +1050,27 @@ async def analyze_experiment_freq_impl(
         created_at = datetime.now(UTC)
         participant_outcomes = await asyncio.to_thread(
             get_participant_metrics,
-            dwh.session,
-            sa_table,
-            metrics,
-            unique_id_field.field_name,
-            participant_ids,
+            session=dwh.session,
+            sa_table=sa_table,
+            metrics=metrics,
+            participant_ids=participant_ids,
+            primary_id_key=unique_id_name,
+            cluster_id_key=cluster_key_name,
         )
+        if cluster_key_name is not None:
+            cluster_values = {outcome.participant_id: outcome.cluster_value for outcome in participant_outcomes}
+            assignments_df[cluster_key_name] = assignments_df["participant_id"].map(cluster_values)
+            num_missing = sum(1 for v in cluster_values.values() if v is None)
+            if num_missing > 0:
+                raise StatsAnalysisError(
+                    f"Cluster column '{cluster_key_name}' is missing for {num_missing} assigned participant(s). "
+                    "This can indicate post-assignment changes to cluster IDs in the datasource."
+                )
 
     if len(participant_outcomes) == 0:
         raise StatsAnalysisError(
             "No assigned participants found in the datasource. Check that "
-            f"ids used in assignment are usable with your unique identifier ({unique_id_field.field_name}), and "
+            f"ids used in assignment are usable with your unique identifier ({unique_id_name}), and "
             "that metric data exists for them."
         )
 
@@ -1070,6 +1085,7 @@ async def analyze_experiment_freq_impl(
         participant_outcomes,
         baseline_arm_id,
         alpha=experiment.alpha,
+        cluster_col=cluster_key_name,
     )
 
     metric_analyses = []
