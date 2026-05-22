@@ -1065,15 +1065,11 @@ async def analyze_experiment_freq_impl(
                 cluster_col,
             )
             assignments_df[cluster_col] = assignments_df["participant_id"].map(cluster_values)
-            missing_cluster_mask = assignments_df[cluster_col].isna()
-            if missing_cluster_mask.any():
-                missing_ids = assignments_df.loc[missing_cluster_mask, "participant_id"].tolist()
-                sample = ", ".join(missing_ids[:5])
-                suffix = "..." if len(missing_ids) > 5 else ""
+            num_missing_ids = assignments_df[cluster_col].isna().sum()
+            if num_missing_ids > 0:
                 raise StatsAnalysisError(
-                    f"Cluster column '{cluster_col}' is missing for {len(missing_ids)} assigned participant(s) "
-                    f"(e.g. {sample}{suffix}). This can indicate post-assignment changes to cluster IDs "
-                    "in the datasource."
+                    f"Cluster column '{cluster_col}' is missing for {num_missing_ids} assigned participant(s). "
+                    "This can indicate post-assignment changes to cluster IDs in the datasource."
                 )
 
     if len(participant_outcomes) == 0:

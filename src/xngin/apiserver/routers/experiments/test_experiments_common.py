@@ -65,7 +65,6 @@ from xngin.apiserver.sqla import tables
 from xngin.apiserver.storage.storage_format_converters import ExperimentStorageConverter
 from xngin.apiserver.testing.assertions import assert_dates_equal
 from xngin.apiserver.testing.testing_dwh_def import TESTING_DWH_PARTICIPANT_DEF
-from xngin.stats.stats_errors import StatsAnalysisError
 
 
 def make_createexperimentrequest_json(
@@ -2467,7 +2466,9 @@ async def test_analyze_experiment_freq_impl_with_cluster_key(xngin_session, test
     assert clustered_treatment.std_error > hc1_treatment.std_error
 
 
-async def test_analyze_experiment_freq_impl_raises_when_cluster_missing_in_dwh(xngin_session, testing_datasource):
+async def test_analyze_experiment_freq_impl_tolerates_assigned_participant_missing_in_dwh(
+    xngin_session, testing_datasource
+):
     design_spec = _clustered_analyze_design_spec(cluster_key="cluster_equal")
     experiment, _ = await make_insertable_experiment(
         testing_datasource.ds,
@@ -2479,17 +2480,19 @@ async def test_analyze_experiment_freq_impl_raises_when_cluster_missing_in_dwh(x
     baseline_arm_id, _ = await _insert_clustered_assignments(
         xngin_session,
         experiment,
-        participant_ids=["1", "2", "999999999"],
+        participant_ids=[*[str(i) for i in range(1, 101)], "999999999"],
     )
 
-    with pytest.raises(StatsAnalysisError, match="Cluster column 'cluster_equal' is missing"):
-        await analyze_experiment_freq_impl(
-            xngin_session,
-            testing_datasource.ds.get_config(),
-            experiment,
-            baseline_arm_id,
-            design_spec.metrics,
-        )
+    analysis = await analyze_experiment_freq_impl(
+        xngin_session,
+        testing_datasource.ds.get_config(),
+        experiment,
+        baseline_arm_id,
+        design_spec.metrics,
+    )
+    assert analysis.num_participants == 101
+    assert analysis.num_missing_participants == 1
+    assert sum(arm.num_missing_values for arm in analysis.metric_analyses[0].arm_analyses) == 1
 
 
 async def test_arm_population_counter(xngin_session, testing_datasource):
