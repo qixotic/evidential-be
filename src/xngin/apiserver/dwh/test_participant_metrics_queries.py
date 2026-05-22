@@ -13,7 +13,6 @@ from xngin.apiserver.dwh.participant_metrics_queries import (
     between_strategy,
     build_participant_metrics_plan,
     coalesce_chunks_into_disjunctives,
-    get_participant_field_values,
     get_participant_metrics,
     identify_runs,
     make_participant_chunks,
@@ -102,11 +101,11 @@ def test_get_participant_metrics(queries_dwh_session, shared_sample_tables):
     rows = get_participant_metrics(
         queries_dwh_session,
         shared_sample_tables.sample_table,
-        [
+        metrics=[
             DesignSpecMetricRequest(field_name="float_col", metric_pct_change=0.1),
             DesignSpecMetricRequest(field_name="bool_col", metric_pct_change=0.1),
         ],
-        unique_id_field="id",
+        primary_id_key="id",
         participant_ids=participant_ids,
     )
 
@@ -140,12 +139,12 @@ def test_build_participant_metrics_query_plans_batches_sorted_ids(shared_sample_
     participant_ids.extend(["100", "200", "300"])
 
     query_plan_set = build_participant_metrics_plan(
-        shared_sample_tables.sample_table,
-        [
+        sa_table=shared_sample_tables.sample_table,
+        metrics=[
             DesignSpecMetricRequest(field_name="float_col", metric_pct_change=0.1),
             DesignSpecMetricRequest(field_name="bool_col", metric_pct_change=0.1),
         ],
-        unique_id_field="id",
+        primary_id_key="id",
         participant_ids=participant_ids,
     )
     query_plans = query_plan_set.plans
@@ -164,12 +163,12 @@ def test_build_participant_metrics_query_plans_batches_integer_ranges(shared_sam
     participant_ids.extend(["20000", "20002"])
 
     query_plan_set = build_participant_metrics_plan(
-        shared_sample_tables.sample_table,
-        [
+        sa_table=shared_sample_tables.sample_table,
+        metrics=[
             DesignSpecMetricRequest(field_name="float_col", metric_pct_change=0.1),
             DesignSpecMetricRequest(field_name="bool_col", metric_pct_change=0.1),
         ],
-        unique_id_field="id",
+        primary_id_key="id",
         participant_ids=participant_ids,
     )
     query_plans = query_plan_set.plans
@@ -190,12 +189,12 @@ def test_build_participant_metrics_query_plans_coalesces_between_filters(shared_
     participant_ids = [str(i) for start in range(1, PARTICIPANT_BATCH_SIZE * 3 // 2, 3) for i in (start, start + 1)]
 
     query_plans = build_participant_metrics_plan(
-        shared_sample_tables.sample_table,
-        [
+        sa_table=shared_sample_tables.sample_table,
+        metrics=[
             DesignSpecMetricRequest(field_name="float_col", metric_pct_change=0.1),
             DesignSpecMetricRequest(field_name="bool_col", metric_pct_change=0.1),
         ],
-        unique_id_field="id",
+        primary_id_key="id",
         participant_ids=participant_ids,
     ).plans
 
@@ -209,12 +208,12 @@ def test_build_participant_metrics_query_plans_keeps_single_large_between_range(
     participant_ids = [str(i) for i in range(PARTICIPANT_BATCH_SIZE + 5, 0, -1)]
 
     query_plan_set = build_participant_metrics_plan(
-        shared_sample_tables.sample_table,
-        [
+        sa_table=shared_sample_tables.sample_table,
+        metrics=[
             DesignSpecMetricRequest(field_name="float_col", metric_pct_change=0.1),
             DesignSpecMetricRequest(field_name="bool_col", metric_pct_change=0.1),
         ],
-        unique_id_field="id",
+        primary_id_key="id",
         participant_ids=participant_ids,
     )
     query_plans = query_plan_set.plans
@@ -226,7 +225,7 @@ def test_build_participant_metrics_query_plans_keeps_single_large_between_range(
     assert query.params == {"id_1": 1, "id_2": PARTICIPANT_BATCH_SIZE + 5}
 
 
-class TestClusteredDwhParticipantFieldValues:
+class TestClusteredDwhParticipantMetrics:
     @pytest.fixture(name="clustered_dwh_session", scope="class")
     def fixture_clustered_dwh_session(self):
         test_db = get_test_uri_info(flags.XNGIN_DEVDWH_DSN)
@@ -245,28 +244,33 @@ class TestClusteredDwhParticipantFieldValues:
     def fixture_clustered_dwh_table(self, clustered_dwh_session):
         return Table("clustered_dwh", MetaData(), autoload_with=clustered_dwh_session.get_bind())
 
-    def test_get_participant_field_values_returns_cluster_ids(self, clustered_dwh_session, clustered_dwh_table):
-        values = get_participant_field_values(
+    def test_get_participant_metrics_returns_cluster_values(self, clustered_dwh_session, clustered_dwh_table):
+        outcomes = get_participant_metrics(
             clustered_dwh_session,
             clustered_dwh_table,
-            unique_id_field="participant_id",
+            metrics=[],
             participant_ids=["1", "2", "3"],
-            field_name="cluster_equal",
+            primary_id_key="participant_id",
+            cluster_id_key="cluster_equal",
         )
-        assert values == {"1": "0", "2": "0", "3": "0"}
+        cluster_values = {outcome.participant_id: outcome.cluster_value for outcome in outcomes}
+        assert cluster_values == {"1": "0", "2": "0", "3": "0"}
 
-    def test_get_participant_field_values_raises_for_missing_column(self, clustered_dwh_session, clustered_dwh_table):
-        with pytest.raises(LateValidationError, match="Field 'missing_col' not found"):
-            get_participant_field_values(
+    def test_get_participant_metrics_raises_for_missing_cluster_column(
+        self, clustered_dwh_session, clustered_dwh_table
+    ):
+        with pytest.raises(LateValidationError, match="Cluster ID field 'missing_col' not found"):
+            get_participant_metrics(
                 clustered_dwh_session,
                 clustered_dwh_table,
-                unique_id_field="participant_id",
+                metrics=[],
                 participant_ids=["1"],
-                field_name="missing_col",
+                primary_id_key="participant_id",
+                cluster_id_key="missing_col",
             )
 
 
-def test_get_participant_field_values_preserves_nulls():
+def test_get_participant_metrics_preserves_null_cluster_values():
     engine = create_engine("sqlite:///:memory:")
     metadata = MetaData()
     table = Table(
@@ -288,14 +292,16 @@ def test_get_participant_field_values_preserves_nulls():
             )
             session.commit()
 
-            values = get_participant_field_values(
+            outcomes = get_participant_metrics(
                 session,
                 table,
-                unique_id_field="participant_id",
+                metrics=[],
                 participant_ids=["1", "2"],
-                field_name="cluster_id",
+                primary_id_key="participant_id",
+                cluster_id_key="cluster_id",
             )
     finally:
         engine.dispose()
 
-    assert values == {"1": None, "2": "school-a"}
+    cluster_values = {outcome.participant_id: outcome.cluster_value for outcome in outcomes}
+    assert cluster_values == {"1": None, "2": "school-a"}

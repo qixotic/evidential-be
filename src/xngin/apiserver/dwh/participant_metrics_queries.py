@@ -199,16 +199,23 @@ def coalesce_chunks_into_disjunctives(participant_filters: list[ParticipantChunk
 
 
 def build_participant_metrics_plan(
+    *,
     sa_table: Table,
     metrics: list[DesignSpecMetricRequest],
-    unique_id_field: str,
     participant_ids: list[str],
+    primary_id_key: str,
+    cluster_id_key: str | None = None,
 ) -> ParticipantMetricsPlans:
-    unique_id_col: sqlalchemy.Column = sa_table.c[unique_id_field]
-    select_columns: list[Label] = [cast(unique_id_col, String).label("participant_id")]
-
     # query for a participant_id column (the unique id column) and the metrics columns.
     field_names = ["participant_id"]
+    primary_id_col: sqlalchemy.Column = sa_table.c[primary_id_key]
+    select_columns: list[Label] = [cast(primary_id_col, String).label("participant_id")]
+
+    # Optionally also fetch the cluster column values for cluster-randomized designs.
+    if cluster_id_key is not None:
+        field_names.append(cluster_id_key)
+        select_columns.append(cast(sa_table.c[cluster_id_key], String).label(cluster_id_key))
+
     metric_types = [MetricType.from_python_type(sa_table.c[m.field_name].type.python_type) for m in metrics]
     for metric, metric_type in zip(metrics, metric_types, strict=False):
         field_name = metric.field_name
@@ -221,7 +228,7 @@ def build_participant_metrics_plan(
             cast_column = cast(cast(col, Integer), Float)
         select_columns.append(cast_column.label(field_name))
 
-    chunks = make_participant_chunks(unique_id_col, participant_ids)
+    chunks = make_participant_chunks(primary_id_col, participant_ids)
     coalesced_chunks = coalesce_chunks_into_disjunctives(chunks)
 
     between_filter_count = sum(1 for chunk in chunks if not chunk.is_includes)
@@ -234,7 +241,7 @@ def build_participant_metrics_plan(
 
     query_plans: list[QueryPlan] = []
     for batch_chunks in coalesced_chunks:
-        batch_filters = [filter_op.to_filter(unique_id_field, unique_id_col.type) for filter_op in batch_chunks]
+        batch_filters = [filter_op.to_filter(primary_id_key, primary_id_col.type) for filter_op in batch_chunks]
         group_filter = or_(*[create_one_filter(filter_, sa_table) for filter_ in batch_filters])
         query_plans.append(QueryPlan(query=select(*select_columns).filter(group_filter), chunks=batch_chunks))
 
@@ -244,101 +251,37 @@ def build_participant_metrics_plan(
     )
 
 
-def build_participant_field_plan(
-    sa_table: Table,
-    unique_id_field: str,
-    participant_ids: list[str],
-    field_name: str,
-) -> ParticipantMetricsPlans:
-    """Build batched DWH queries for participant_id and one additional field, preserving NULLs."""
-    unique_id_col: sqlalchemy.Column = sa_table.c[unique_id_field]
-    field_col: sqlalchemy.Column = sa_table.c[field_name]
-    select_columns: list[Label] = [
-        cast(unique_id_col, String).label("participant_id"),
-        cast(field_col, String).label(field_name),
-    ]
-    field_names = ["participant_id", field_name]
-
-    chunks = make_participant_chunks(unique_id_col, participant_ids)
-    coalesced_chunks = coalesce_chunks_into_disjunctives(chunks)
-
-    query_plans: list[QueryPlan] = []
-    for batch_chunks in coalesced_chunks:
-        batch_filters = [filter_op.to_filter(unique_id_field, unique_id_col.type) for filter_op in batch_chunks]
-        group_filter = or_(*[create_one_filter(filter_, sa_table) for filter_ in batch_filters])
-        query_plans.append(QueryPlan(query=select(*select_columns).filter(group_filter), chunks=batch_chunks))
-
-    return ParticipantMetricsPlans(field_names=field_names, plans=query_plans)
-
-
-def get_participant_field_values(
-    session: Session,
-    sa_table: Table,
-    unique_id_field: str,
-    participant_ids: list[str],
-    field_name: str,
-) -> dict[str, str | None]:
-    """Fetch one DWH column for the given participant IDs as strings, preserving NULL values."""
-    if not participant_ids:
-        return {}
-
-    logger.info(
-        "Fetching participant field values: table={} unique_id_field={} field_name={} #participant_ids={}",
-        sa_table.name,
-        unique_id_field,
-        field_name,
-        len(participant_ids),
-    )
-    if field_name not in sa_table.c:
-        raise LateValidationError(f"Field '{field_name}' not found in table.")
-    if unique_id_field not in sa_table.columns:
-        raise LateValidationError(f"Unique ID field {unique_id_field} not found in table.")
-
-    field_plans = build_participant_field_plan(
-        sa_table=sa_table,
-        unique_id_field=unique_id_field,
-        participant_ids=participant_ids,
-        field_name=field_name,
-    )
-    field_values: dict[str, str | None] = {}
-    for batch_index, plan in enumerate(field_plans.plans, start=1):
-        logger.info(
-            "Running participant field batch {}/{}: {}",
-            batch_index,
-            len(field_plans.plans),
-            plan.summary(),
-        )
-        for participant_id, value in session.execute(plan.query):
-            field_values[str(participant_id)] = None if value is None else str(value)
-    logger.info("Finished fetching participant field values rows={}", len(field_values))
-    return field_values
-
-
 def get_participant_metrics(
     session: Session,
     sa_table: Table,
+    *,
     metrics: list[DesignSpecMetricRequest],
-    unique_id_field: str,
     participant_ids: list[str],
+    primary_id_key: str,
+    cluster_id_key: str | None = None,
 ) -> list[ParticipantOutcome]:
     logger.info(
-        "Fetching participant metrics: table={} unique_id_field={} #participant_ids={} metrics={}",
+        "Fetching participant metrics: table={} primary_key={} cluster_key={} #participant_ids={} metrics={}",
         sa_table.name,
-        unique_id_field,
+        primary_id_key,
+        cluster_id_key,
         len(participant_ids),
         [metric.field_name for metric in metrics],
     )
     missing_metrics = {m.field_name for m in metrics if m.field_name not in sa_table.c}
     if len(missing_metrics) > 0:
         raise LateValidationError(f"Missing metrics (check your Datasource configuration): {missing_metrics}")
-    if unique_id_field not in sa_table.columns:
-        raise LateValidationError(f"Unique ID field {unique_id_field} not found in table.")
+    if primary_id_key not in sa_table.columns:
+        raise LateValidationError(f"Primary ID field '{primary_id_key}' not found in table.")
+    if cluster_id_key is not None and cluster_id_key not in sa_table.c:
+        raise LateValidationError(f"Cluster ID field '{cluster_id_key}' not found in table.")
 
     pmplans = build_participant_metrics_plan(
         sa_table=sa_table,
         metrics=metrics,
-        unique_id_field=unique_id_field,
         participant_ids=participant_ids,
+        primary_id_key=primary_id_key,
+        cluster_id_key=cluster_id_key,
     )
     participant_outcomes: list[ParticipantOutcome] = []
     for batch_index, plan in enumerate(pmplans.plans, start=1):
@@ -349,16 +292,24 @@ def get_participant_metrics(
         for result in results:
             metric_values: list[MetricValue] = []
             participant_id = None
+            cluster_value: str | None = None
             for i, field_name in enumerate(pmplans.field_names):
                 if field_name == "participant_id":
                     participant_id = result[i]
+                elif cluster_id_key is not None and field_name == cluster_id_key:
+                    value = result[i]
+                    cluster_value = None if value is None else str(value)
                 else:
                     metric_values.append(MetricValue(metric_name=field_name, metric_value=result[i]))
             if participant_id is None:
                 # Should never happen as we filter on the participant_id field.
                 raise LateValidationError("Participant ID is required.")
             participant_outcomes.append(
-                ParticipantOutcome(participant_id=str(participant_id), metric_values=metric_values)
+                ParticipantOutcome(
+                    participant_id=str(participant_id),
+                    metric_values=metric_values,
+                    cluster_value=cluster_value,
+                )
             )
             batch_outcome_count += 1
         logger.info(
