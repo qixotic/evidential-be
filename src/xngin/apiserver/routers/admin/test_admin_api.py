@@ -4493,17 +4493,27 @@ def test_analyze_cluster_preassigned_experiment(testing_datasource, aclient: Adm
     )
 
     created = aclient.create_experiment(datasource_id=datasource_id, body=experiment_request, random_state=42).data
-    experiment_analysis = aclient.analyze_experiment(
-        datasource_id=datasource_id, experiment_id=created.experiment_id
+    experiment_id = created.experiment_id
+    clustered_analysis = aclient.analyze_experiment(datasource_id=datasource_id, experiment_id=experiment_id).data
+    hc1_analysis = aclient.analyze_experiment(
+        datasource_id=datasource_id,
+        experiment_id=experiment_id,
+        cluster_robust_standard_errors=False,
     ).data
-    assert isinstance(experiment_analysis, FreqExperimentAnalysisResponse)
-    assert experiment_analysis.experiment_id == created.experiment_id
-    assert experiment_analysis.num_participants == 100
-    assert experiment_analysis.num_missing_participants == 0
-    assert len(experiment_analysis.metric_analyses) == 1
-    metric_analysis = experiment_analysis.metric_analyses[0]
+    assert isinstance(clustered_analysis, FreqExperimentAnalysisResponse)
+    assert isinstance(hc1_analysis, FreqExperimentAnalysisResponse)
+    assert clustered_analysis.experiment_id == experiment_id
+    assert clustered_analysis.num_participants == 100
+    assert clustered_analysis.num_missing_participants == 0
+    assert len(clustered_analysis.metric_analyses) == 1
+    metric_analysis = clustered_analysis.metric_analyses[0]
     assert metric_analysis.metric_name == "test_score"
     assert len(metric_analysis.arm_analyses) == 2
+    treatment_arm_id = next(arm.arm_id for arm in metric_analysis.arm_analyses if arm.arm_name == "treatment")
+    clustered_treatment = next(arm for arm in metric_analysis.arm_analyses if arm.arm_id == treatment_arm_id)
+    hc1_treatment = next(arm for arm in hc1_analysis.metric_analyses[0].arm_analyses if arm.arm_id == treatment_arm_id)
+    assert clustered_treatment.estimate == hc1_treatment.estimate
+    assert clustered_treatment.std_error != hc1_treatment.std_error
     for analysis in metric_analysis.arm_analyses:
         assert analysis.estimate is not None
         assert not np.isnan(analysis.estimate)

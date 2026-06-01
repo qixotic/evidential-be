@@ -738,35 +738,34 @@ async def _create_clustered_preassigned_experiment(
 
 
 async def test_analyze_experiment_freq_impl_with_cluster_key(xngin_session, testing_datasource):
+    """Clustered experiments use cluster-robust SEs; HC1 is available on the same assignments."""
     experiment = await _create_clustered_preassigned_experiment(xngin_session, testing_datasource)
     baseline_arm_id = experiment.arms[0].id
     metrics = [DesignSpecMetricRequest(field_name="test_score", metric_pct_change=0.1)]
+    dsconfig = testing_datasource.ds.get_config()
 
     clustered_analysis = await analyze_experiment_freq_impl(
-        xngin_session, testing_datasource.ds.get_config(), experiment, baseline_arm_id, metrics
+        xngin_session, dsconfig, experiment, baseline_arm_id, metrics
+    )
+    hc1_analysis = await analyze_experiment_freq_impl(
+        xngin_session,
+        dsconfig,
+        experiment,
+        baseline_arm_id,
+        metrics,
+        cluster_robust_standard_errors=False,
     )
     treatment_arm_id = experiment.arms[1].id
     clustered_treatment = next(
         a for a in clustered_analysis.metric_analyses[0].arm_analyses if a.arm_id == treatment_arm_id
     )
-    assert clustered_treatment.std_error is not None
-    assert not np.isnan(clustered_treatment.std_error)
-    assert clustered_treatment.std_error > 0
-
-    non_cluster_experiment = await _create_clustered_preassigned_experiment(
-        xngin_session, testing_datasource, cluster_key=None
-    )
-    hc1_analysis = await analyze_experiment_freq_impl(
-        xngin_session,
-        testing_datasource.ds.get_config(),
-        non_cluster_experiment,
-        non_cluster_experiment.arms[0].id,
-        metrics,
-    )
-    hc1_treatment_arm_id = non_cluster_experiment.arms[1].id
-    hc1_treatment = next(a for a in hc1_analysis.metric_analyses[0].arm_analyses if a.arm_id == hc1_treatment_arm_id)
-    assert hc1_treatment.std_error is not None
-    assert clustered_treatment.std_error > hc1_treatment.std_error
+    hc1_treatment = next(a for a in hc1_analysis.metric_analyses[0].arm_analyses if a.arm_id == treatment_arm_id)
+    assert clustered_treatment.estimate == hc1_treatment.estimate
+    for treatment in (clustered_treatment, hc1_treatment):
+        assert treatment.std_error is not None
+        assert not np.isnan(treatment.std_error)
+        assert treatment.std_error > 0
+    assert clustered_treatment.std_error != hc1_treatment.std_error
 
 
 async def test_analyze_experiment_freq_impl_raises_when_cluster_key_null(xngin_session, testing_datasource):

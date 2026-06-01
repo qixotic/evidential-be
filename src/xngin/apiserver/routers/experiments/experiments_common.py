@@ -1025,25 +1025,42 @@ async def analyze_experiment_freq_impl(
     experiment: tables.Experiment,
     baseline_arm_id: str,
     metrics: list[DesignSpecMetricRequest],
+    *,
+    cluster_robust_standard_errors: bool | None = None,
 ) -> FreqExperimentAnalysisResponse:
-    """Analyze a frequentist experiment. Assumes arms and arm_assignments are preloaded."""
+    """Analyze a frequentist experiment. Assumes arms and arm_assignments are preloaded.
+
+    When ``cluster_robust_standard_errors`` is None (default), use cluster-robust SEs iff the
+    experiment has a cluster key field. When False, analyze the same assignments with HC1 SEs even
+    for clustered experiments. When True, require a cluster key field on the experiment.
+    """
 
     unique_id_field = experiment.unique_id_field()
     if experiment.datasource_table is None or unique_id_field is None:
         raise StatsAnalysisError("Experiment must have a datasource table and unique ID field to analyze.")
 
-    include_cluster = experiment.cluster_key_field() is not None
+    has_cluster_key = experiment.cluster_key_field() is not None
+    if cluster_robust_standard_errors is None:
+        use_cluster_robust_se = has_cluster_key
+    elif cluster_robust_standard_errors:
+        use_cluster_robust_se = True
+        if not has_cluster_key:
+            raise StatsAnalysisError("cluster_robust_standard_errors=True requires an experiment with a cluster key.")
+    else:
+        use_cluster_robust_se = False
+
+    include_cluster_key = has_cluster_key and use_cluster_robust_se
     participant_ids, assignments_df = await read_assignments_efficiently(
-        xngin_session, experiment.id, include_cluster_key=include_cluster
+        xngin_session, experiment.id, include_cluster_key=include_cluster_key
     )
     if assignments_df.empty:
         raise StatsAnalysisError("No participants found for experiment.")
-    if include_cluster and assignments_df["cluster_key"].isna().any():
+    if include_cluster_key and assignments_df["cluster_key"].isna().any():
         raise StatsAnalysisError(
             "One or more assigned participants have a null cluster_key. "
             "This can indicate post-assignment changes to cluster IDs in the datasource."
         )
-    cluster_col = "cluster_key" if include_cluster else None
+    cluster_col = "cluster_key" if use_cluster_robust_se else None
     async with DwhSession(dsconfig.dwh) as dwh:
         sa_table = await dwh.inspect_table(experiment.datasource_table)
 

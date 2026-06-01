@@ -1893,6 +1893,16 @@ async def analyze_experiment(
             description="UUID of the baseline arm. If None, the first design spec arm is used.",
         ),
     ] = None,
+    cluster_robust_standard_errors: Annotated[
+        bool | None,
+        Query(
+            description=(
+                "Use cluster-robust standard errors when the experiment has a cluster key. "
+                "Default (omit): clustered experiments use cluster-robust SEs; others use HC1. "
+                "Set false to run HC1 on the same assignments as a clustered experiment."
+            ),
+        ),
+    ] = None,
 ) -> ExperimentAnalysisResponse:
     ds = await get_datasource_or_raise(xngin_session, user, datasource_id)
     experiment = await get_experiment_via_ds_or_raise(
@@ -1915,7 +1925,12 @@ async def analyze_experiment(
             baseline_arm_id = baseline_arm_id or design_spec.arms[0].arm_id
             assert baseline_arm_id is not None
             return await experiments_common.analyze_experiment_freq_impl(
-                xngin_session, ds.get_config(), experiment, baseline_arm_id, design_spec.metrics
+                xngin_session,
+                ds.get_config(),
+                experiment,
+                baseline_arm_id,
+                design_spec.metrics,
+                cluster_robust_standard_errors=cluster_robust_standard_errors,
             )
         case MABExperimentSpec():
             return await experiments_common.analyze_experiment_bandit_impl(xngin_session, experiment)

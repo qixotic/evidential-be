@@ -3798,6 +3798,7 @@ class AdminAPIClient:  # noqa: RUF100,PLR0904
         datasource_id: str,
         experiment_id: str,
         baseline_arm_id: str | None = ADMIN_API_CLIENT_NOT_REQUIRED,
+        cluster_robust_standard_errors: bool | None = ADMIN_API_CLIENT_NOT_REQUIRED,
         raise_if_not_default_status: Literal[True] = True,
         client_exts: AdminAPIClientExtensions | None = None,
     ) -> AdminAPIClientResult[Literal[HTTPStatus.OK], ExperimentAnalysisResponse, type[ExperimentAnalysisResponse]]: ...
@@ -3808,6 +3809,7 @@ class AdminAPIClient:  # noqa: RUF100,PLR0904
         datasource_id: str,
         experiment_id: str,
         baseline_arm_id: str | None = ADMIN_API_CLIENT_NOT_REQUIRED,
+        cluster_robust_standard_errors: bool | None = ADMIN_API_CLIENT_NOT_REQUIRED,
         raise_if_not_default_status: Literal[False],
         client_exts: AdminAPIClientExtensions | None = None,
     ) -> (
@@ -3828,6 +3830,7 @@ class AdminAPIClient:  # noqa: RUF100,PLR0904
         datasource_id: str,
         experiment_id: str,
         baseline_arm_id: str | None = ADMIN_API_CLIENT_NOT_REQUIRED,
+        cluster_robust_standard_errors: bool | None = ADMIN_API_CLIENT_NOT_REQUIRED,
         raise_if_not_default_status: bool = True,
         client_exts: AdminAPIClientExtensions | None = None,
     ) -> (
@@ -3875,6 +3878,7 @@ class AdminAPIClient:  # noqa: RUF100,PLR0904
                 },
                 query_params={
                     "baseline_arm_id": baseline_arm_id,
+                    "cluster_robust_standard_errors": cluster_robust_standard_errors,
                 },
                 raise_if_not_default_status=raise_if_not_default_status,
                 client_exts=client_exts,
