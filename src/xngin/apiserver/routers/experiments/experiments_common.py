@@ -1032,9 +1032,18 @@ async def analyze_experiment_freq_impl(
     if experiment.datasource_table is None or unique_id_field is None:
         raise StatsAnalysisError("Experiment must have a datasource table and unique ID field to analyze.")
 
-    participant_ids, assignments_df = await read_assignments_efficiently(xngin_session, experiment.id)
+    include_cluster = experiment.cluster_key_field() is not None
+    participant_ids, assignments_df = await read_assignments_efficiently(
+        xngin_session, experiment.id, include_cluster_key=include_cluster
+    )
     if assignments_df.empty:
         raise StatsAnalysisError("No participants found for experiment.")
+    if include_cluster and assignments_df["cluster_key"].isna().any():
+        raise StatsAnalysisError(
+            "One or more assigned participants have a null cluster_key. "
+            "This can indicate post-assignment changes to cluster IDs in the datasource."
+        )
+    cluster_col = "cluster_key" if include_cluster else None
     async with DwhSession(dsconfig.dwh) as dwh:
         sa_table = await dwh.inspect_table(experiment.datasource_table)
 
@@ -1067,6 +1076,7 @@ async def analyze_experiment_freq_impl(
         participant_outcomes,
         baseline_arm_id,
         alpha=experiment.alpha,
+        cluster_col=cluster_col,
     )
 
     metric_analyses = []
