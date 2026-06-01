@@ -4467,6 +4467,50 @@ def test_create_freq_preassigned_experiment_with_cluster_key_roundtrips(
         assert csv_assignment["created_at"] == created_at.isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
+def test_analyze_cluster_preassigned_experiment(testing_datasource, aclient: AdminAPIClient):
+    """Clustered preassigned experiment returns valid analysis through admin analyze_experiment."""
+    datasource_id = testing_datasource.datasource_id
+    experiment_request = CreateExperimentRequest(
+        design_spec=PreassignedFrequentistExperimentSpec(
+            experiment_type="freq_preassigned",
+            experiment_name="Cluster analyze e2e",
+            description="Verify clustered analysis via admin API.",
+            table_name="clustered_dwh",
+            primary_key="participant_id",
+            cluster_key="cluster_powerlaw",
+            start_date=datetime(2024, 1, 1, tzinfo=UTC),
+            end_date=datetime(2024, 1, 31, 23, 59, 59, tzinfo=UTC),
+            arms=[
+                Arm(arm_name="control", arm_description="Control"),
+                Arm(arm_name="treatment", arm_description="Treatment"),
+            ],
+            metrics=[DesignSpecMetricRequest(field_name="test_score", metric_pct_change=5)],
+            strata=[],
+            filters=[],
+            desired_n=100,
+        ),
+        webhooks=[],
+    )
+
+    created = aclient.create_experiment(datasource_id=datasource_id, body=experiment_request, random_state=42).data
+    experiment_analysis = aclient.analyze_experiment(
+        datasource_id=datasource_id, experiment_id=created.experiment_id
+    ).data
+    assert isinstance(experiment_analysis, FreqExperimentAnalysisResponse)
+    assert experiment_analysis.experiment_id == created.experiment_id
+    assert experiment_analysis.num_participants == 100
+    assert experiment_analysis.num_missing_participants == 0
+    assert len(experiment_analysis.metric_analyses) == 1
+    metric_analysis = experiment_analysis.metric_analyses[0]
+    assert metric_analysis.metric_name == "test_score"
+    assert len(metric_analysis.arm_analyses) == 2
+    for analysis in metric_analysis.arm_analyses:
+        assert analysis.estimate is not None
+        assert not np.isnan(analysis.estimate)
+        assert analysis.std_error is not None
+        assert not np.isnan(analysis.std_error)
+
+
 async def test_create_freq_preassigned_experiment_with_missing_cluster_key_raises(
     testing_datasource,
     aclient: AdminAPIClient,
