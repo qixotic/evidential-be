@@ -4468,7 +4468,7 @@ def test_create_freq_preassigned_experiment_with_cluster_key_roundtrips(
 
 
 def test_analyze_cluster_preassigned_experiment(testing_datasource, aclient: AdminAPIClient):
-    """Clustered preassigned experiment returns valid analysis through admin analyze_experiment."""
+    """Basic test of clustered preassigned experiment analysis via the admin API."""
     datasource_id = testing_datasource.datasource_id
     experiment_request = CreateExperimentRequest(
         design_spec=PreassignedFrequentistExperimentSpec(
@@ -4477,38 +4477,32 @@ def test_analyze_cluster_preassigned_experiment(testing_datasource, aclient: Adm
             description="Verify clustered analysis via admin API.",
             table_name="clustered_dwh",
             primary_key="participant_id",
-            cluster_key="cluster_powerlaw",
+            cluster_key="cluster_moderate",
             start_date=datetime(2024, 1, 1, tzinfo=UTC),
             end_date=datetime(2024, 1, 31, 23, 59, 59, tzinfo=UTC),
-            arms=[
-                Arm(arm_name="control", arm_description="Control"),
-                Arm(arm_name="treatment", arm_description="Treatment"),
-            ],
-            metrics=[DesignSpecMetricRequest(field_name="test_score", metric_pct_change=5)],
+            arms=[Arm(arm_name="control", arm_description="C"), Arm(arm_name="treatment", arm_description="T")],
+            metrics=[DesignSpecMetricRequest(field_name="converted", metric_pct_change=5)],
             strata=[],
             filters=[],
             desired_n=100,
         ),
-        webhooks=[],
     )
 
     created = aclient.create_experiment(datasource_id=datasource_id, body=experiment_request, random_state=42).data
-    experiment_analysis = aclient.analyze_experiment(
-        datasource_id=datasource_id, experiment_id=created.experiment_id
-    ).data
-    assert isinstance(experiment_analysis, FreqExperimentAnalysisResponse)
-    assert experiment_analysis.experiment_id == created.experiment_id
-    assert experiment_analysis.num_participants == 100
-    assert experiment_analysis.num_missing_participants == 0
-    assert len(experiment_analysis.metric_analyses) == 1
-    metric_analysis = experiment_analysis.metric_analyses[0]
-    assert metric_analysis.metric_name == "test_score"
+    exp_analysis = aclient.analyze_experiment(datasource_id=datasource_id, experiment_id=created.experiment_id).data
+    assert isinstance(exp_analysis, FreqExperimentAnalysisResponse)
+    assert exp_analysis.experiment_id == created.experiment_id
+    assert exp_analysis.num_participants == 100
+    assert exp_analysis.num_missing_participants == 0
+    assert len(exp_analysis.metric_analyses) == 1
+    metric_analysis = exp_analysis.metric_analyses[0]
+    assert metric_analysis.metric_name == "converted"
     assert len(metric_analysis.arm_analyses) == 2
-    for analysis in metric_analysis.arm_analyses:
-        assert analysis.estimate is not None
-        assert not np.isnan(analysis.estimate)
-        assert analysis.std_error is not None
-        assert not np.isnan(analysis.std_error)
+    for arm_analysis in metric_analysis.arm_analyses:
+        assert arm_analysis.estimate is not None
+        assert not np.isnan(arm_analysis.estimate)
+        assert arm_analysis.std_error is not None
+        assert not np.isnan(arm_analysis.std_error)
 
 
 async def test_create_freq_preassigned_experiment_with_missing_cluster_key_raises(
