@@ -65,7 +65,6 @@ from xngin.apiserver.sqla import tables
 from xngin.apiserver.storage.storage_format_converters import ExperimentStorageConverter
 from xngin.apiserver.testing.assertions import assert_dates_equal
 from xngin.apiserver.testing.testing_dwh_def import TESTING_DWH_PARTICIPANT_DEF
-from xngin.stats.stats_errors import StatsAnalysisError
 
 
 def make_createexperimentrequest_json(
@@ -782,26 +781,6 @@ async def test_analyze_experiment_freq_impl_with_cluster_key(
     assert hc1_treatment.std_error > 0
     assert crse_treatment.estimate == hc1_treatment.estimate
     assert crse_treatment.std_error > hc1_treatment.std_error
-
-
-async def test_analyze_experiment_freq_impl_raises_when_cluster_key_null(xngin_session, testing_datasource):
-    experiment = await _create_clustered_preassigned_experiment(xngin_session, testing_datasource)
-    baseline_arm_id = experiment.arms[0].id
-    assignment = await xngin_session.scalar(
-        select(tables.ArmAssignment).where(tables.ArmAssignment.experiment_id == experiment.id).limit(1)
-    )
-    assert assignment is not None
-    assignment.cluster_key = None
-    await xngin_session.commit()
-
-    with pytest.raises(StatsAnalysisError, match="null cluster_key"):
-        await analyze_experiment_freq_impl(
-            xngin_session,
-            testing_datasource.ds.get_config(),
-            experiment,
-            baseline_arm_id,
-            [DesignSpecMetricRequest(field_name="test_score", metric_pct_change=0.1)],
-        )
 
 
 async def test_create_preassigned_experiment_impl_raises_on_duplicate_ids(

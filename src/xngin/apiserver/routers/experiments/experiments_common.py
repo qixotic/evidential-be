@@ -1038,11 +1038,7 @@ async def analyze_experiment_freq_impl(
     )
     if assignments_df.empty:
         raise StatsAnalysisError("No participants found for experiment.")
-    if include_cluster and assignments_df["cluster_key"].isna().any():
-        raise StatsAnalysisError(
-            "One or more assigned participants have a null cluster_key. "
-            "This can indicate post-assignment changes to cluster IDs in the datasource."
-        )
+
     cluster_col = "cluster_key" if include_cluster else None
     async with DwhSession(dsconfig.dwh) as dwh:
         sa_table = await dwh.inspect_table(experiment.datasource_table)
