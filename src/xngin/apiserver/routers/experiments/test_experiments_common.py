@@ -868,9 +868,12 @@ async def test_create_experiment_impl_clustered_samples_clusters(xngin_session, 
         arms_by_cluster[assignment.cluster_key].add(assignment.arm_id)
 
     assert len(ids_by_cluster) == 3
+    # Verify every participant in each sampled cluster was assigned.
     for cluster_key, participant_ids in ids_by_cluster.items():
         cluster_id = int(cluster_key)
+        # We know the cluster_equal column has 10 participants per cluster per tools/generated_clustered_data.py.
         assert participant_ids == set(range(cluster_id * 10, cluster_id * 10 + 10))
+    # Each cluster should be tied to exactly 1 arm only.
     assert all(len(arm_ids) == 1 for arm_ids in arms_by_cluster.values())
 
 
